@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>온습도 모니터</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Segoe UI', Arial, sans-serif;
+      background: #f0f2f5;
+      color: #333;
+      padding: 24px;
+    }
+
+    h1 {
+      text-align: center;
+      font-size: 1.6rem;
+      margin-bottom: 24px;
+      color: #222;
+    }
+
+    /* 현재값 카드 */
+    .cards {
+      display: flex;
+      justify-content: center;
+      gap: 24px;
+      margin-bottom: 16px;
+      flex-wrap: wrap;
+    }
+
+    .card {
+      border-radius: 16px;
+      padding: 24px 40px;
+      text-align: center;
+      color: white;
+      min-width: 180px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.12);
+    }
+
+    .card.temp { background: linear-gradient(135deg, #ff6b6b, #ee4444); }
+    .card.humi { background: linear-gradient(135deg, #4ecdc4, #2ab5ac); }
+
+    .card .label { font-size: 1rem; opacity: 0.9; margin-bottom: 8px; }
+    .card .value { font-size: 2.8rem; font-weight: bold; }
+
+    /* 업데이트 시간 & 상태 */
+    .meta {
+      text-align: center;
+      font-size: 0.85rem;
+      color: #888;
+      margin-bottom: 24px;
+    }
+
+    /* 그래프 */
+    .charts {
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+      max-width: 960px;
+      margin: 0 auto;
+    }
+
+    .chart-box {
+      background: white;
+      border-radius: 12px;
+      padding: 20px 24px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.07);
+    }
+
+    .chart-box h2 {
+      font-size: 1rem;
+      margin-bottom: 14px;
+      color: #555;
+    }
+
+    canvas { width: 100% !important; }
+
+    /* 버튼 */
+    .actions {
+      text-align: center;
+      margin: 20px 0 8px;
+    }
+
+    button {
+      background: #4a90e2;
+      color: white;
+      border: none;
+      border-radius: 8px;
+      padding: 10px 28px;
+      font-size: 0.95rem;
+      cursor: pointer;
+      box-shadow: 0 2px 6px rgba(74,144,226,0.35);
+    }
+
+    button:hover { background: #357abd; }
+    button:active { transform: scale(0.97); }
+
+    #status {
+      display: inline-block;
+      margin-left: 14px;
+      font-size: 0.85rem;
+      color: #888;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>온습도 모니터</h1>
+
+  <div class="cards">
+    <div class="card temp">
+      <div class="label">현재 온도</div>
+      <div class="value" id="temp-value">--</div>
+    </div>
+    <div class="card humi">
+      <div class="label">현재 습도</div>
+      <div class="value" id="humi-value">--</div>
+    </div>
+  </div>
+
+  <div class="meta">
+    <span id="last-update">마지막 업데이트: --</span>
+  </div>
+
+  <div class="actions">
+    <button onclick="fetchData()">새로고침</button>
+    <span id="status">불러오는 중...</span>
+  </div>
+
+  <div class="charts">
+    <div class="chart-box">
+      <h2>온도 / 습도 변화</h2>
+      <canvas id="combinedChart"></canvas>
+    </div>
+  </div>
+
+  <script>
+    const SHEET_ID = '1n67LgsIWDtouk_sHqriukuZVU2O0xOGgPqsGNvILy4s';
+
+    let combinedChart = null;
+
+    function fetchData() {
+      document.getElementById('status').textContent = '불러오는 중...';
+
+      // 기존 스크립트 태그 제거
+      const old = document.getElementById('gviz-script');
+      if (old) old.remove();
+
+      const cbName = 'gvizCallback';
+      window[cbName] = function(res) {
+        try {
+          processData(res);
+        } catch(e) {
+          document.getElementById('status').textContent = '데이터 처리 오류';
+        }
+      };
+
+      const script = document.createElement('script');
+      script.id = 'gviz-script';
+      script.src = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:json;responseHandler:${cbName}&headers=1`;
+      script.onerror = () => {
+        document.getElementById('status').textContent = '네트워크 오류 — 시트 공유 설정을 확인하세요';
+      };
+      document.head.appendChild(script);
+    }
+
+    function processData(res) {
+      const rows = res.table.rows;
+      const labels = [];
+      const temps  = [];
+      const humis  = [];
+
+      rows.forEach(row => {
+        if (!row.c || row.c.length < 3) return;
+        const tCell = row.c[0];
+        const tmpCell = row.c[1];
+        const humCell = row.c[2];
+        if (!tCell || tmpCell === null || humCell === null) return;
+
+        const timeVal = tCell.f || tCell.v || '';
+        const tempVal = parseFloat(tmpCell.v);
+        const humiVal = parseFloat(humCell.v);
+
+        if (timeVal && !isNaN(tempVal) && !isNaN(humiVal)) {
+          labels.push(timeVal);
+          temps.push(tempVal);
+          humis.push(humiVal);
+        }
+      });
+
+      if (labels.length === 0) {
+        document.getElementById('status').textContent = '데이터가 없습니다';
+        return;
+      }
+
+      // 현재값 카드 업데이트
+      const lastTemp = temps[temps.length - 1];
+      const lastHumi = humis[humis.length - 1];
+      const lastTime = labels[labels.length - 1];
+
+      document.getElementById('temp-value').textContent = lastTemp.toFixed(1) + '°C';
+      document.getElementById('humi-value').textContent = lastHumi.toFixed(1) + '%';
+      document.getElementById('last-update').textContent = '마지막 업데이트: ' + lastTime;
+      document.getElementById('status').textContent = '업데이트 완료  (5분마다 자동 갱신)';
+
+      drawCharts(labels, temps, humis);
+    }
+
+    function drawCharts(labels, temps, humis) {
+      // 데이터가 많으면 일부만 표시
+      const maxPoints = 50;
+      if (labels.length > maxPoints) {
+        const step = Math.ceil(labels.length / maxPoints);
+        labels = labels.filter((_, i) => i % step === 0);
+        temps  = temps.filter((_, i) => i % step === 0);
+        humis  = humis.filter((_, i) => i % step === 0);
+      }
+
+      if (combinedChart) combinedChart.destroy();
+
+      combinedChart = new Chart(document.getElementById('combinedChart'), {
+        type: 'line',
+        data: {
+          labels,
+          datasets: [
+            {
+              label: '온도 (°C)',
+              data: temps,
+              borderColor: '#ff6b6b',
+              backgroundColor: 'rgba(255,107,107,0.08)',
+              borderWidth: 2,
+              pointRadius: 3,
+              pointBackgroundColor: '#ff6b6b',
+              fill: true,
+              tension: 0.3,
+              yAxisID: 'yTemp'
+            },
+            {
+              label: '습도 (%)',
+              data: humis,
+              borderColor: '#4ecdc4',
+              backgroundColor: 'rgba(78,205,196,0.08)',
+              borderWidth: 2,
+              pointRadius: 3,
+              pointBackgroundColor: '#4ecdc4',
+              fill: true,
+              tension: 0.3,
+              yAxisID: 'yHumi'
+            }
+          ]
+        },
+        options: {
+          responsive: true,
+          interaction: { intersect: false, mode: 'index' },
+          plugins: {
+            legend: {
+              display: true,
+              labels: { font: { size: 12 }, usePointStyle: true }
+            }
+          },
+          scales: {
+            x: {
+              ticks: { maxTicksLimit: 8, maxRotation: 30, font: { size: 11 } },
+              grid: { color: '#f0f0f0' }
+            },
+            yTemp: {
+              type: 'linear',
+              position: 'left',
+              title: { display: true, text: '온도 (°C)', color: '#ff6b6b' },
+              ticks: { color: '#ff6b6b', font: { size: 11 } },
+              grid: { color: '#f0f0f0' }
+            },
+            yHumi: {
+              type: 'linear',
+              position: 'right',
+              title: { display: true, text: '습도 (%)', color: '#4ecdc4' },
+              ticks: { color: '#4ecdc4', font: { size: 11 } },
+              grid: { drawOnChartArea: false }
+            }
+          }
+        }
+      });
+    }
+
+    // 시작 시 로드 + 5분마다 자동 갱신
+    fetchData();
+    setInterval(fetchData, 300000);
+  </script>
+
+</body>
+</html>
